@@ -35,6 +35,7 @@ menuconfig BCMDHD
 if BCMDHD
 source "drivers/net/wireless/rockchip_wlan/rkwifi/Kconfig"
 source "drivers/net/wireless/rockchip_wlan/rtl8852be/Kconfig"
+source "drivers/net/wireless/rockchip_wlan/rtl8852bu/Kconfig"
 endif
 
 endif # WL_ROCKCHIP
