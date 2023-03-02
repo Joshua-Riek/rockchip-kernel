@@ -24,4 +24,5 @@ obj-$(CONFIG_EXTCON_RT8973A)	+= extcon-rt8973a.o
 obj-$(CONFIG_EXTCON_SM5502)	+= extcon-sm5502.o
 obj-$(CONFIG_EXTCON_USB_GPIO)	+= extcon-usb-gpio.o
 obj-$(CONFIG_EXTCON_USBC_CROS_EC) += extcon-usbc-cros-ec.o
+obj-$(CONFIG_EXTCON_USBC_VIRTUAL_PD) += extcon-pd-virtual.o
 obj-$(CONFIG_EXTCON_USBC_TUSB320) += extcon-usbc-tusb320.o
