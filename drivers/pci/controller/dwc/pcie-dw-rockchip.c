@@ -1099,26 +1099,7 @@ static int rk_pcie_ep_win_parse(struct rk_pcie *rk_pcie)
 	return 0;
 }
 
-static int rk_pcie_msi_host_init(struct pcie_port *pp)
-{
-	return 0;
-}
-
-static int rk_pcie_host_init(struct pcie_port *pp)
-{
-	int ret;
-	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
-
-	dw_pcie_setup_rc(pp);
-
-	ret = rk_pcie_establish_link(pci);
-
-	return ret;
-}
-
-static struct dw_pcie_host_ops rk_pcie_host_ops = {
-	.host_init = rk_pcie_host_init,
-};
+static struct dw_pcie_host_ops rk_pcie_host_ops;
 
 static int rk_add_pcie_port(struct rk_pcie *rk_pcie, struct platform_device *pdev)
 {
@@ -1132,7 +1113,6 @@ static int rk_add_pcie_port(struct rk_pcie *rk_pcie, struct platform_device *pde
 		/* If msi_irq is invalid, use outband msi routine */
 		if (pp->msi_irq < 0) {
 			dev_info(dev, "use outband MSI support");
-			rk_pcie_host_ops.msi_host_init = rk_pcie_msi_host_init;
 		} else {
 			dev_info(dev, "max MSI vector is %d\n", rk_pcie->msi_vector_num);
 			pp->num_vectors = rk_pcie->msi_vector_num;
