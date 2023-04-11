@@ -12,12 +12,63 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/video.h>
+#include <linux/pm_qos.h>
 
 #include <media/v4l2-dev.h>
 
 #include "uvc.h"
 #include "uvc_queue.h"
 #include "uvc_video.h"
+#include "u_uvc.h"
+
+#if defined(CONFIG_ARCH_ROCKCHIP) && defined(CONFIG_NO_GKI)
+static bool uvc_using_zero_copy(struct uvc_video *video)
+{
+	struct uvc_device *uvc = container_of(video, struct uvc_device, video);
+	struct f_uvc_opts *opts = fi_to_f_uvc_opts(uvc->func.fi);
+
+	if (opts && opts->uvc_zero_copy && video->fcc != V4L2_PIX_FMT_YUYV)
+		return true;
+	else
+		return false;
+}
+
+static void uvc_wait_req_complete(struct uvc_video *video, struct uvc_request *ureq)
+{
+	unsigned long flags;
+	struct usb_request *req;
+	int ret;
+
+	spin_lock_irqsave(&video->req_lock, flags);
+
+	list_for_each_entry(req, &video->req_free, list) {
+		if (req == ureq->req)
+			break;
+	}
+
+	if (req != ureq->req) {
+		reinit_completion(&ureq->req_done);
+
+		spin_unlock_irqrestore(&video->req_lock, flags);
+		ret = wait_for_completion_timeout(&ureq->req_done,
+						  msecs_to_jiffies(500));
+		if (ret == 0)
+			uvcg_warn(&video->uvc->func,
+				  "timed out waiting for req done\n");
+		return;
+	}
+
+	spin_unlock_irqrestore(&video->req_lock, flags);
+}
+#else
+static inline bool uvc_using_zero_copy(struct uvc_video *video)
+{
+	return false;
+}
+
+static inline void uvc_wait_req_complete(struct uvc_video *video, struct uvc_request *ureq)
+{ }
+#endif
 
 /* --------------------------------------------------------------------------
  * Video codecs
@@ -27,6 +78,20 @@ static int
 uvc_video_encode_header(struct uvc_video *video, struct uvc_buffer *buf,
 		u8 *data, int len)
 {
+	if (uvc_using_zero_copy(video)) {
+		u8 *mem;
+
+		mem = buf->mem + video->queue.buf_used +
+		      (video->queue.buf_used / (video->req_size - 2)) * 2;
+
+		mem[0] = 2;
+		mem[1] = UVC_STREAM_EOH | video->fid;
+		if (buf->bytesused - video->queue.buf_used <= len - 2)
+			mem[1] |= UVC_STREAM_EOF;
+
+		return 2;
+	}
+
 	data[0] = UVCG_REQUEST_HEADER_LEN;
 	data[1] = UVC_STREAM_EOH | video->fid;
 
@@ -48,7 +113,8 @@ uvc_video_encode_data(struct uvc_video *video, struct uvc_buffer *buf,
 	mem = buf->mem + queue->buf_used;
 	nbytes = min((unsigned int)len, buf->bytesused - queue->buf_used);
 
-	memcpy(data, mem, nbytes);
+	if (!uvc_using_zero_copy(video))
+		memcpy(data, mem, nbytes);
 	queue->buf_used += nbytes;
 
 	return nbytes;
@@ -87,6 +153,7 @@ uvc_video_encode_bulk(struct usb_request *req, struct uvc_video *video,
 		video->fid ^= UVC_STREAM_FID;
 
 		video->payload_size = 0;
+		req->zero = 1;
 	}
 
 	if (video->payload_size == video->max_payload_size ||
@@ -167,6 +234,10 @@ uvc_video_encode_isoc(struct usb_request *req, struct uvc_video *video,
 	int len = video->req_size;
 	int ret;
 
+	if (uvc_using_zero_copy(video))
+		req->buf = buf->mem + video->queue.buf_used +
+			   (video->queue.buf_used / (video->req_size - 2)) * 2;
+
 	/* Add the header. */
 	ret = uvc_video_encode_header(video, buf, mem, len);
 	mem += ret;
@@ -233,6 +304,9 @@ uvc_video_complete(struct usb_ep *ep, struct usb_request *req)
 
 	spin_lock_irqsave(&video->req_lock, flags);
 	list_add_tail(&req->list, &video->req_free);
+#if defined(CONFIG_ARCH_ROCKCHIP) && defined(CONFIG_NO_GKI)
+	complete(&ureq->req_done);
+#endif
 	spin_unlock_irqrestore(&video->req_lock, flags);
 
 	schedule_work(&video->pump);
@@ -248,6 +322,7 @@ uvc_video_free_requests(struct uvc_video *video)
 			sg_free_table(&video->ureq[i].sgt);
 
 			if (video->ureq[i].req) {
+				uvc_wait_req_complete(video, &video->ureq[i]);
 				usb_ep_free_request(video->ep, video->ureq[i].req);
 				video->ureq[i].req = NULL;
 			}
@@ -276,9 +351,14 @@ uvc_video_alloc_requests(struct uvc_video *video)
 
 	BUG_ON(video->req_size);
 
-	req_size = video->ep->maxpacket
-		 * max_t(unsigned int, video->ep->maxburst, 1)
-		 * (video->ep->mult);
+	if (!usb_endpoint_xfer_bulk(video->ep->desc)) {
+		req_size = video->ep->maxpacket
+			 * max_t(unsigned int, video->ep->maxburst, 1)
+			 * (video->ep->mult);
+	} else {
+		req_size = video->ep->maxpacket
+			 * max_t(unsigned int, video->ep->maxburst, 1);
+	}
 
 	video->ureq = kcalloc(video->uvc_num_requests, sizeof(struct uvc_request), GFP_KERNEL);
 	if (video->ureq == NULL)
@@ -299,6 +379,9 @@ uvc_video_alloc_requests(struct uvc_video *video)
 		video->ureq[i].req->context = &video->ureq[i];
 		video->ureq[i].video = video;
 
+#if defined(CONFIG_ARCH_ROCKCHIP) && defined(CONFIG_NO_GKI)
+		init_completion(&video->ureq[i].req_done);
+#endif
 		list_add_tail(&video->ureq[i].req->list, &video->req_free);
 		/* req_size/PAGE_SIZE + 1 for overruns and + 1 for header */
 		sg_alloc_table(&video->ureq[i].sgt,
@@ -397,12 +480,17 @@ int uvcg_video_enable(struct uvc_video *video, int enable)
 {
 	unsigned int i;
 	int ret;
+	struct uvc_device *uvc;
+	struct f_uvc_opts *opts;
 
 	if (video->ep == NULL) {
 		uvcg_info(&video->uvc->func,
 			  "Video enable failed, device is uninitialized.\n");
 		return -ENODEV;
 	}
+
+	uvc = container_of(video, struct uvc_device, video);
+	opts = fi_to_f_uvc_opts(uvc->func.fi);
 
 	if (!enable) {
 		cancel_work_sync(&video->pump);
@@ -414,9 +502,12 @@ int uvcg_video_enable(struct uvc_video *video, int enable)
 
 		uvc_video_free_requests(video);
 		uvcg_queue_enable(&video->queue, 0);
+		if (cpu_latency_qos_request_active(&uvc->pm_qos))
+			cpu_latency_qos_remove_request(&uvc->pm_qos);
 		return 0;
 	}
 
+	cpu_latency_qos_add_request(&uvc->pm_qos, opts->pm_qos_latency);
 	if ((ret = uvcg_queue_enable(&video->queue, 1)) < 0)
 		return ret;
 

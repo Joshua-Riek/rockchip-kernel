@@ -69,6 +69,7 @@
 #include <linux/tsacct_kern.h>
 
 #include <asm/tlb.h>
+#include <soc/rockchip/rockchip_performance.h>
 
 #ifdef CONFIG_PARAVIRT
 # include <asm/paravirt.h>

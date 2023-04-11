@@ -731,7 +731,8 @@ int usb_gadget_disconnect(struct usb_gadget *gadget)
 	ret = gadget->ops->pullup(gadget, 0);
 	if (!ret) {
 		gadget->connected = 0;
-		gadget->udc->driver->disconnect(gadget);
+		if (gadget->udc->driver)
+			gadget->udc->driver->disconnect(gadget);
 	}
 
 out:
@@ -756,7 +757,7 @@ int usb_gadget_deactivate(struct usb_gadget *gadget)
 {
 	int ret = 0;
 
-	if (gadget->deactivated)
+	if (!gadget || gadget->deactivated)
 		goto out;
 
 	if (gadget->connected) {

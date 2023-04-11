@@ -46,6 +46,14 @@ config MTD_NAND_ECC_SW_BCH
 	  ECC codes. They are used with NAND devices requiring more than 1 bit
 	  of error correction.
 
+config MTD_NAND_BBT_USING_FLASH
+	bool "Mtd Nand BBT using flash management strategy"
+	depends on MTD_NAND_CORE
+	help
+	  This is a simple flash BBT management strategy for Nand devices.
+
+	  Say Y when you want to use BBT in flash.
+
 endmenu
 
 endmenu

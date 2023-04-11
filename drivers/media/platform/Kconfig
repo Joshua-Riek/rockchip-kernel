@@ -165,6 +165,7 @@ config VIDEO_ROCKCHIP_ISP1
 	  To compile this driver as a module, choose M here: the module
 	  will be called rockchip-isp1.
 
+source "drivers/media/platform/rockchip/Kconfig"
 source "drivers/media/platform/exynos4-is/Kconfig"
 source "drivers/media/platform/am437x/Kconfig"
 source "drivers/media/platform/xilinx/Kconfig"
