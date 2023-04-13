@@ -15,7 +15,6 @@
 #include <linux/cpufreq.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
-#include <linux/devfreq_cooling.h>
 #include <linux/devfreq-event.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
@@ -163,11 +162,6 @@ struct rockchip_dmcfreq {
 
 	bool is_fixed;
 	bool is_set_rate_direct;
-
-	struct thermal_cooling_device *devfreq_cooling;
-	u32 static_coefficient;
-	s32 ts[4];
-	struct thermal_zone_device *ddr_tz;
 
 	unsigned int touchboostpulse_duration_val;
 	u64 touchboostpulse_endtime;
@@ -627,8 +621,8 @@ static struct devfreq_dev_profile rockchip_devfreq_dmc_profile = {
 	.target		= rockchip_dmcfreq_target,
 	.get_dev_status	= rockchip_dmcfreq_get_dev_status,
 	.get_cur_freq	= rockchip_dmcfreq_get_cur_freq,
+	.is_cooling_device = true,
 };
-
 
 static inline void reset_last_status(struct devfreq *devfreq)
 {
@@ -3168,125 +3162,6 @@ static void rockchip_dmcfreq_boost_init(struct rockchip_dmcfreq *dmcfreq)
 		dev_err(dmcfreq->dev, "failed to register input handler\n");
 }
 
-static unsigned long model_static_power(struct devfreq *devfreq,
-					unsigned long voltage)
-{
-	struct device *dev = devfreq->dev.parent;
-	struct rockchip_dmcfreq *dmcfreq = dev_get_drvdata(dev);
-
-	int temperature;
-	unsigned long temp;
-	unsigned long temp_squared, temp_cubed, temp_scaling_factor;
-	const unsigned long voltage_cubed = (voltage * voltage * voltage) >> 10;
-
-	if (!IS_ERR_OR_NULL(dmcfreq->ddr_tz) && dmcfreq->ddr_tz->ops->get_temp) {
-		int ret;
-
-		ret =
-		    dmcfreq->ddr_tz->ops->get_temp(dmcfreq->ddr_tz,
-						   &temperature);
-		if (ret) {
-			dev_warn_ratelimited(dev,
-					     "failed to read temp for ddr thermal zone: %d\n",
-					     ret);
-			temperature = FALLBACK_STATIC_TEMPERATURE;
-		}
-	} else {
-		temperature = FALLBACK_STATIC_TEMPERATURE;
-	}
-
-	/*
-	 * Calculate the temperature scaling factor. To be applied to the
-	 * voltage scaled power.
-	 */
-	temp = temperature / 1000;
-	temp_squared = temp * temp;
-	temp_cubed = temp_squared * temp;
-	temp_scaling_factor = (dmcfreq->ts[3] * temp_cubed)
-	    + (dmcfreq->ts[2] * temp_squared)
-	    + (dmcfreq->ts[1] * temp)
-	    + dmcfreq->ts[0];
-
-	return (((dmcfreq->static_coefficient * voltage_cubed) >> 20)
-		* temp_scaling_factor) / 1000000;
-}
-
-static struct devfreq_cooling_power ddr_cooling_power_data = {
-	.get_static_power = model_static_power,
-	.dyn_power_coeff = 120,
-};
-
-static int ddr_power_model_simple_init(struct rockchip_dmcfreq *dmcfreq)
-{
-	struct device_node *power_model_node;
-	const char *tz_name;
-	u32 temp;
-
-	power_model_node = of_get_child_by_name(dmcfreq->dev->of_node,
-						"ddr_power_model");
-	if (!power_model_node) {
-		dev_err(dmcfreq->dev, "could not find power_model node\n");
-		return -ENODEV;
-	}
-
-	if (of_property_read_string(power_model_node, "thermal-zone", &tz_name)) {
-		dev_err(dmcfreq->dev, "ts in power_model not available\n");
-		return -EINVAL;
-	}
-
-	dmcfreq->ddr_tz = thermal_zone_get_zone_by_name(tz_name);
-	if (IS_ERR(dmcfreq->ddr_tz)) {
-		pr_warn_ratelimited
-		    ("Error getting ddr thermal zone (%ld), not yet ready?\n",
-		     PTR_ERR(dmcfreq->ddr_tz));
-		dmcfreq->ddr_tz = NULL;
-
-		return -EPROBE_DEFER;
-	}
-
-	if (of_property_read_u32(power_model_node, "static-power-coefficient",
-				 &dmcfreq->static_coefficient)) {
-		dev_err(dmcfreq->dev,
-			"static-power-coefficient not available\n");
-		return -EINVAL;
-	}
-	if (of_property_read_u32(power_model_node, "dynamic-power-coefficient",
-				 &temp)) {
-		dev_err(dmcfreq->dev,
-			"dynamic-power-coefficient not available\n");
-		return -EINVAL;
-	}
-	ddr_cooling_power_data.dyn_power_coeff = (unsigned long)temp;
-
-	if (of_property_read_u32_array
-	    (power_model_node, "ts", (u32 *)dmcfreq->ts, 4)) {
-		dev_err(dmcfreq->dev, "ts in power_model not available\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static void
-rockchip_dmcfreq_register_cooling_device(struct rockchip_dmcfreq *dmcfreq)
-{
-	int ret;
-
-	ret = ddr_power_model_simple_init(dmcfreq);
-	if (ret)
-		return;
-	dmcfreq->devfreq_cooling =
-		of_devfreq_cooling_register_power(dmcfreq->dev->of_node,
-						  dmcfreq->info.devfreq,
-						  &ddr_cooling_power_data);
-	if (IS_ERR(dmcfreq->devfreq_cooling)) {
-		ret = PTR_ERR(dmcfreq->devfreq_cooling);
-		dev_err(dmcfreq->dev,
-			"Failed to register cooling device (%d)\n",
-			ret);
-	}
-}
-
 static int rockchip_dmcfreq_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -3346,7 +3221,6 @@ static int rockchip_dmcfreq_probe(struct platform_device *pdev)
 	rockchip_dmcfreq_add_interface(data);
 	rockchip_dmcfreq_boost_init(data);
 	rockchip_dmcfreq_vop_bandwidth_init(&data->info);
-	rockchip_dmcfreq_register_cooling_device(data);
 
 	rockchip_set_system_status(SYS_STATUS_NORMAL);
 
