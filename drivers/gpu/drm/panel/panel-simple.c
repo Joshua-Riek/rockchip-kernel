@@ -516,9 +516,9 @@ int panel_simple_loader_protect(struct drm_panel *panel)
 	struct panel_simple *p = to_panel_simple(panel);
 	int err;
 
-	err = panel_simple_regulator_enable(p);
+	err = pm_runtime_get_sync(panel->dev);
 	if (err < 0) {
-		dev_err(panel->dev, "failed to enable supply: %d\n", err);
+		pm_runtime_put_autosuspend(panel->dev);
 		return err;
 	}
 
@@ -548,8 +548,14 @@ static int panel_simple_suspend(struct device *dev)
 {
 	struct panel_simple *p = dev_get_drvdata(dev);
 
+	gpiod_set_value_cansleep(p->reset_gpio, 1);
 	gpiod_set_value_cansleep(p->enable_gpio, 0);
-	regulator_disable(p->supply);
+
+	panel_simple_regulator_disable(p);
+
+	if (p->desc->delay.unprepare)
+		msleep(p->desc->delay.unprepare);
+
 	p->unprepared_time = ktime_get();
 
 	kfree(p->edid);
@@ -567,22 +573,14 @@ static int panel_simple_unprepare(struct drm_panel *panel)
 	if (!p->prepared)
 		return 0;
 
-	pm_runtime_mark_last_busy(panel->dev);
-	ret = pm_runtime_put_autosuspend(panel->dev);
-	if (ret < 0)
-		return ret;
-
 	if (p->desc->exit_seq)
 		if (p->dsi)
 			panel_simple_xfer_dsi_cmd_seq(p, p->desc->exit_seq);
 
-	gpiod_direction_output(p->reset_gpio, 1);
-	gpiod_direction_output(p->enable_gpio, 0);
-
-	panel_simple_regulator_disable(p);
-
-	if (p->desc->delay.unprepare)
-		msleep(p->desc->delay.unprepare);
+	pm_runtime_mark_last_busy(panel->dev);
+	ret = pm_runtime_put_autosuspend(panel->dev);
+	if (ret < 0)
+		return ret;
 
 	p->prepared = false;
 
@@ -622,7 +620,7 @@ static int panel_simple_prepare_once(struct panel_simple *p)
 		return err;
 	}
 
-	gpiod_direction_output(p->enable_gpio, 1);
+	gpiod_set_value_cansleep(p->enable_gpio, 1);
 
 	delay = p->desc->delay.prepare;
 	if (p->no_hpd)
@@ -703,12 +701,12 @@ static int panel_simple_prepare(struct drm_panel *panel)
 		return ret;
 	}
 
-	gpiod_direction_output(p->reset_gpio, 1);
+	gpiod_set_value_cansleep(p->reset_gpio, 1);
 
 	if (p->desc->delay.reset)
 		msleep(p->desc->delay.reset);
 
-	gpiod_direction_output(p->reset_gpio, 0);
+	gpiod_set_value_cansleep(p->reset_gpio, 0);
 
 	if (p->desc->delay.init)
 		msleep(p->desc->delay.init);
