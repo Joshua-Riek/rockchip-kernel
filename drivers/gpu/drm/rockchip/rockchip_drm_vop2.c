@@ -1762,21 +1762,6 @@ static void vop2_power_domain_off_work(struct work_struct *work)
 	spin_unlock(&pd->lock);
 }
 
-static void vop2_power_domain_esmat_off(struct drm_crtc *crtc)
-{	struct vop2_video_port *vp = to_vop2_video_port(crtc);
-	struct vop2 *vop2 = vp->vop2;
-	struct vop2_power_domain *pd;
-
-	pd = vop2_find_pd_by_id(vop2, VOP2_PD_ESMART);
-	if (vop2_power_domain_status(pd)) {
-		vop2_power_domain_off(pd);
-		vop2_cfg_done(crtc);
-		vop2_wait_power_domain_off(pd);
-		pd->vp_mask = 0;
-		pd->ref_count = 0;
-	}
-}
-
 static void vop2_win_enable(struct vop2_win *win)
 {
 	/*
@@ -1796,6 +1781,9 @@ static void vop2_win_enable(struct vop2_win *win)
 	 */
 	if (!VOP_WIN_GET_REG_BAK(win->vop2, win, enable)) {
 		if (win->pd) {
+			if (win->pd->data->id == VOP2_PD_ESMART)
+				return;
+
 			vop2_power_domain_get(win->pd);
 			win->pd->vp_mask |= win->vp_mask;
 		}
@@ -3803,7 +3791,7 @@ static void vop2_initial(struct drm_crtc *crtc)
 
 		if (is_vop3(vop2)) {
 			VOP_CTRL_SET(vop2, dsp_vs_t_sel, 0);
-			VOP_CTRL_SET(vop2, esmart_lb_mode, vop2->data->esmart_lb_mode);
+			VOP_CTRL_SET(vop2, esmart_lb_mode, vop2->esmart_lb_mode);
 		}
 
 		/*
@@ -3897,7 +3885,8 @@ static void vop2_power_domain_off_by_disabled_vp(struct vop2_power_domain *pd)
 	int ret;
 
 	if (pd->data->id == VOP2_PD_CLUSTER0 || pd->data->id == VOP2_PD_CLUSTER1 ||
-	    pd->data->id == VOP2_PD_CLUSTER2 || pd->data->id == VOP2_PD_CLUSTER3) {
+	    pd->data->id == VOP2_PD_CLUSTER2 || pd->data->id == VOP2_PD_CLUSTER3 ||
+	    pd->data->id == VOP2_PD_ESMART) {
 		phys_id = ffs(pd->data->module_id_mask) - 1;
 		win = vop2_find_win_by_phys_id(vop2, phys_id);
 		vp_id = ffs(win->vp_mask) - 1;
@@ -4321,15 +4310,6 @@ static void vop2_crtc_atomic_disable(struct drm_crtc *crtc,
 	if (vp_data->feature & VOP_FEATURE_VIVID_HDR)
 		VOP_MODULE_SET(vop2, vp, hdr_lut_update_en, 0);
 	vop2_disable_all_planes_for_crtc(crtc);
-
-	/*
-	 * A workaround for RK3588's PD_ESMART, we can't
-	 * dynamic turn on/off it at runtime, so it can
-	 * only be turn down when the whole VOP_PD off.
-	 * see vop2_power_domain_put at vop2_win_disable
-	 */
-	if (vop2->version == VOP_VERSION_RK3588 && vop2->enable_count == 1)
-		vop2_power_domain_esmat_off(crtc);
 
 	if (vop2->dscs[vcstate->dsc_id].enabled &&
 	    vop2->dscs[vcstate->dsc_id].attach_vp_id == vp->id &&
@@ -10468,6 +10448,18 @@ static bool vop3_ignore_plane(struct vop2 *vop2, struct vop2_win *win)
 		return false;
 }
 
+static u32 vop3_esmart_linebuffer_size(struct vop2 *vop2, struct vop2_win *win)
+{
+	if (!is_vop3(vop2) || vop2_cluster_window(win))
+		return vop2->data->max_output.width;
+
+	if (vop2->esmart_lb_mode == VOP3_ESMART_2K_2K_2K_2K_MODE ||
+	    (vop2->esmart_lb_mode == VOP3_ESMART_4K_2K_2K_MODE && win->phys_id != ROCKCHIP_VOP2_ESMART0))
+		return vop2->data->max_output.width / 2;
+	else
+		return vop2->data->max_output.width;
+}
+
 static void vop3_init_esmart_scale_engine(struct vop2 *vop2)
 {
 	u8 scale_engine_num = 0;
@@ -10550,7 +10542,7 @@ static int vop2_plane_init(struct vop2 *vop2, struct vop2_win *win, unsigned lon
 							  "INPUT_WIDTH", 0, max_width);
 	win->input_height_prop = drm_property_create_range(vop2->drm_dev, DRM_MODE_PROP_IMMUTABLE,
 							   "INPUT_HEIGHT", 0, max_height);
-	max_width = vop2->data->max_output.width;
+	max_width = vop3_esmart_linebuffer_size(vop2, win);
 	max_height = vop2->data->max_output.height;
 	if (win->feature & WIN_FEATURE_CLUSTER_SUB)
 		max_width >>= 1;
@@ -11379,6 +11371,97 @@ static void post_buf_empty_work_event(struct work_struct *work)
 	}
 }
 
+static bool vop2_plane_mask_check(struct vop2 *vop2)
+{
+	const struct vop2_data *vop2_data = vop2->data;
+	u32 plane_mask = 0;
+	int i;
+
+	/*
+	 * For RK3568 and RK3588, all windows need to be assigned to
+	 * one of all vps, and two of vps can not share the same window.
+	 */
+	if (vop2->version != VOP_VERSION_RK3568 && vop2->version != VOP_VERSION_RK3588)
+		return true;
+
+	for (i = 0; i < vop2_data->nr_vps; i++) {
+		if (plane_mask & vop2->vps[i].plane_mask) {
+			DRM_WARN("the same window can't be assigned to two vp\n");
+			return false;
+		}
+		plane_mask |= vop2->vps[i].plane_mask;
+	}
+
+	if (hweight32(plane_mask) != vop2_data->nr_layers ||
+	    plane_mask != vop2_data->plane_mask_base) {
+		DRM_WARN("all windows should be assigned, full plane mask: 0x%x, current plane mask: 0x%x\n",
+			 vop2_data->plane_mask_base, plane_mask);
+		return false;
+	}
+
+	return true;
+}
+
+static uint32_t vop2_vp_plane_mask_to_bitmap(const struct vop2_vp_plane_mask *vp_plane_mask)
+{
+	int layer_phy_id = 0;
+	int plane_mask = 0;
+	int i;
+
+	for (i = 0; i < vp_plane_mask->attached_layers_nr; i++) {
+		layer_phy_id = vp_plane_mask->attached_layers[i];
+		plane_mask |= BIT(layer_phy_id);
+	}
+
+	return plane_mask;
+}
+
+static bool vop2_get_vp_of_status(struct device_node *vp_node)
+{
+	struct device_node *vp_sub_node;
+	struct device_node *remote_node;
+	bool vp_enable = false;
+
+	for_each_child_of_node(vp_node, vp_sub_node) {
+		remote_node = of_graph_get_remote_endpoint(vp_sub_node);
+		vp_enable |= of_device_is_available(remote_node);
+	}
+
+	return vp_enable;
+}
+
+static void vop2_plane_mask_assign(struct vop2 *vop2, struct device_node *vop_out_node)
+{
+	const struct vop2_data *vop2_data = vop2->data;
+	const struct vop2_vp_plane_mask *plane_mask;
+	struct device_node *child;
+	int active_vp_num = 0;
+	int vp_id;
+	int i = 0;
+
+	for_each_child_of_node(vop_out_node, child) {
+		if (vop2_get_vp_of_status(child))
+			active_vp_num++;
+	}
+
+	if (vop2_soc_is_rk3566() && active_vp_num > 2)
+		DRM_WARN("RK3566 only support 2 vps\n");
+	plane_mask = vop2_data->plane_mask;
+	plane_mask += (active_vp_num - 1) * ROCKCHIP_MAX_CRTC;
+
+	for_each_child_of_node(vop_out_node, child) {
+		of_property_read_u32(child, "reg", &vp_id);
+		if (vop2_get_vp_of_status(child)) {
+			vop2->vps[vp_id].plane_mask = vop2_vp_plane_mask_to_bitmap(&plane_mask[i]);
+			vop2->vps[vp_id].primary_plane_phy_id = plane_mask[i].primary_plane_id;
+			i++;
+		} else {
+			vop2->vps[vp_id].plane_mask = 0;
+			vop2->vps[vp_id].primary_plane_phy_id = ROCKCHIP_VOP2_PHY_ID_INVALID;
+		}
+	}
+}
+
 static int vop2_bind(struct device *dev, struct device *master, void *data)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -11557,10 +11640,17 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 				if (!of_property_read_u32(mcu_timing_node, "mcu-hold-mode", &val))
 					vop2->vps[vp_id].mcu_timing.mcu_hold_mode = val;
 			}
+		}
 
+		if (!vop2_plane_mask_check(vop2)) {
+			DRM_WARN("use default plane mask\n");
+			vop2_plane_mask_assign(vop2, vop_out_node);
+		}
+
+		for (i = 0; i < vop2->data->nr_vps; i++) {
 			DRM_DEV_INFO(dev, "vp%d assign plane mask: 0x%x, primary plane phy id: %d\n",
-				     vp_id, vop2->vps[vp_id].plane_mask,
-				     vop2->vps[vp_id].primary_plane_phy_id);
+				     i, vop2->vps[i].plane_mask,
+				     vop2->vps[i].primary_plane_phy_id);
 		}
 	}
 
