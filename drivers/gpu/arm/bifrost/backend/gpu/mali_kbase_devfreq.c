@@ -671,23 +671,13 @@ static void kbase_devfreq_work_term(struct kbase_device *kbdev)
 	destroy_workqueue(workq);
 }
 
-static unsigned long kbase_devfreq_get_static_power(struct devfreq *devfreq,
-		unsigned long voltage)
-{
-	struct device *dev = devfreq->dev.parent;
-	struct kbase_device *kbdev = dev_get_drvdata(dev);
-
-	return rockchip_ipa_get_static_power(kbdev->model_data, voltage);
-}
-
 int kbase_devfreq_init(struct kbase_device *kbdev)
 {
-	struct devfreq_cooling_power *kbase_dcp = &kbdev->dfc_power;
 	struct device_node *np = kbdev->dev->of_node;
-	struct device_node *model_node;
 	struct devfreq_dev_profile *dp;
 	int err;
 	struct dev_pm_opp *opp;
+	unsigned int dyn_power_coeff = 0;
 	unsigned int i;
 	bool free_devfreq_freq_table = true;
 
@@ -731,10 +721,16 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	};
 
 #if IS_ENABLED(CONFIG_DEVFREQ_THERMAL)
-	err = kbase_ipa_init(kbdev);
-	if (err) {
-		dev_err(kbdev->dev, "IPA initialization failed");
-		goto ipa_init_failed;
+	of_property_read_u32(kbdev->dev->of_node, "dynamic-power-coefficient",
+			     &dyn_power_coeff);
+	if (dyn_power_coeff) {
+		dp->is_cooling_device = true;
+	} else {
+		err = kbase_ipa_init(kbdev);
+		if (err) {
+			dev_err(kbdev->dev, "IPA initialization failed");
+			goto ipa_init_failed;
+		}
 	}
 #endif
 
@@ -787,45 +783,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	       mali_mdevp.is_checked = true;
 	}
 #if IS_ENABLED(CONFIG_DEVFREQ_THERMAL)
-	of_property_read_u32(kbdev->dev->of_node, "dynamic-power-coefficient",
-			     (u32 *)&kbase_dcp->dyn_power_coeff);
-	model_node = of_get_compatible_child(kbdev->dev->of_node,
-					     "simple-power-model");
-	if (model_node) {
-		of_node_put(model_node);
-		kbdev->model_data =
-			rockchip_ipa_power_model_init(kbdev->dev,
-						      "gpu_leakage");
-		if (IS_ERR_OR_NULL(kbdev->model_data)) {
-			kbdev->model_data = NULL;
-			if (kbase_dcp->dyn_power_coeff)
-				dev_info(kbdev->dev,
-					 "only calculate dynamic power\n");
-			else
-				dev_err(kbdev->dev,
-					"failed to initialize power model\n");
-		} else {
-			kbase_dcp->get_static_power =
-				kbase_devfreq_get_static_power;
-			if (kbdev->model_data->dynamic_coefficient)
-				kbase_dcp->dyn_power_coeff =
-					kbdev->model_data->dynamic_coefficient;
-		}
-	}
-
-	if (kbase_dcp->dyn_power_coeff) {
-		kbdev->devfreq_cooling =
-			of_devfreq_cooling_register_power(kbdev->dev->of_node,
-					kbdev->devfreq,
-					kbase_dcp);
-		if (IS_ERR(kbdev->devfreq_cooling)) {
-			err = PTR_ERR(kbdev->devfreq_cooling);
-			dev_err(kbdev->dev, "failed to register cooling device\n");
-			goto ipa_init_failed;
-		}
-	} else {
-		kbdev->devfreq_cooling = of_devfreq_cooling_register_power(
-				kbdev->dev->of_node,
+	if (!dp->is_cooling_device) {
+		kbdev->devfreq_cooling = devfreq_cooling_em_register(
 				kbdev->devfreq,
 				&kbase_ipa_power_model_ops);
 		if (IS_ERR(kbdev->devfreq_cooling)) {

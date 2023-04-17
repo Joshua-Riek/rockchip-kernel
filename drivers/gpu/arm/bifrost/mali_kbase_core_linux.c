@@ -4985,8 +4985,7 @@ static struct dentry *init_debugfs(struct kbase_device *kbdev)
 
 #ifdef CONFIG_MALI_BIFROST_DEVFREQ
 #if IS_ENABLED(CONFIG_DEVFREQ_THERMAL)
-	if (kbdev->devfreq && !kbdev->model_data &&
-	    !kbdev->dfc_power.dyn_power_coeff)
+	if (kbdev->devfreq && kbdev->devfreq_cooling)
 		kbase_ipa_debugfs_init(kbdev);
 #endif /* CONFIG_DEVFREQ_THERMAL */
 #endif /* CONFIG_MALI_BIFROST_DEVFREQ */
