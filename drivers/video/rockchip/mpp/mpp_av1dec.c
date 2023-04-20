@@ -1054,7 +1054,7 @@ static int av1dec_device_probe(struct device *dev)
 	return ret;
 }
 
-static int av1dec_device_remove(struct device *dev)
+static void av1dec_device_remove(struct device *dev)
 {
 
 	struct platform_device *pdev = to_platform_device(dev);
@@ -1064,8 +1064,6 @@ static int av1dec_device_remove(struct device *dev)
 		drv->remove(pdev);
 
 	dev_pm_domain_detach(dev, true);
-
-	return 0;
 }
 
 static void av1dec_device_shutdown(struct device *dev)

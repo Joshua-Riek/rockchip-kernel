@@ -12,6 +12,7 @@
 #include <linux/devfreq.h>
 #include <linux/devfreq_cooling.h>
 #include <linux/iopoll.h>
+#include <linux/iova.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -298,6 +299,19 @@ struct rkvenc_ccu {
 
 	spinlock_t lock_dchs;
 	union rkvenc2_dual_core_handshake_id dchs[RKVENC_MAX_CORE_NUM];
+};
+
+enum iommu_dma_cookie_type {
+	IOMMU_DMA_IOVA_COOKIE,
+	IOMMU_DMA_MSI_COOKIE,
+};
+
+/* Keep in mind: member order must keep align with struct iommu_dma_cookie */
+struct rkvenc_iommu_dma_cookie {
+	enum iommu_dma_cookie_type type;
+
+	/* Full allocator for IOMMU_DMA_IOVA_COOKIE */
+	struct iova_domain iovad;
 };
 
 static struct rkvenc_hw_info rkvenc_v2_hw_info = {
@@ -2268,7 +2282,9 @@ static int rkvenc2_alloc_rcbbuf(struct platform_device *pdev, struct rkvenc_dev 
 	struct device_node *sram_np;
 	struct resource sram_res;
 	resource_size_t sram_start, sram_end;
-	struct iommu_domain *domain;
+	struct iommu_domain *domain = enc->mpp.iommu_info->domain;
+	struct rkvenc_iommu_dma_cookie *cookie = (void *)domain->iova_cookie;
+	struct iova_domain *iovad = &cookie->iovad;
 	struct device *dev = &pdev->dev;
 
 	/* get rcb iova start and size */
@@ -2283,10 +2299,9 @@ static int rkvenc2_alloc_rcbbuf(struct platform_device *pdev, struct rkvenc_dev 
 		return -EINVAL;
 	}
 	/* alloc reserve iova for rcb */
-	ret = iommu_dma_reserve_iova(dev, iova, sram_used);
-	if (ret) {
+	if (!reserve_iova(iovad, iova >> PAGE_SHIFT, (sram_used + iova) >> PAGE_SHIFT)) {
 		dev_err(dev, "alloc rcb iova error.\n");
-		return ret;
+		return -EINVAL;
 	}
 	/* get sram device node */
 	sram_np = of_parse_phandle(dev->of_node, "rockchip,sram", 0);
@@ -2312,7 +2327,6 @@ static int rkvenc2_alloc_rcbbuf(struct platform_device *pdev, struct rkvenc_dev 
 	sram_size = sram_end - sram_start;
 	sram_size = sram_used < sram_size ? sram_used : sram_size;
 	/* iova map to sram */
-	domain = enc->mpp.iommu_info->domain;
 	ret = iommu_map(domain, iova, sram_start, sram_size, IOMMU_READ | IOMMU_WRITE);
 	if (ret) {
 		dev_err(dev, "sram iommu_map error.\n");

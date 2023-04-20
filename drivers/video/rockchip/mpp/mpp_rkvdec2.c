@@ -8,6 +8,7 @@
  *
  */
 #include <linux/pm_runtime.h>
+#include <linux/iova.h>
 
 #include "mpp_debug.h"
 #include "mpp_common.h"
@@ -25,6 +26,19 @@
 #ifdef CONFIG_PM_DEVFREQ
 #include "../drivers/devfreq/governor.h"
 #endif
+
+enum iommu_dma_cookie_type {
+	IOMMU_DMA_IOVA_COOKIE,
+	IOMMU_DMA_MSI_COOKIE,
+};
+
+/* Keep in mind: member order must keep align with struct iommu_dma_cookie */
+struct rkvdec_iommu_dma_cookie {
+	enum iommu_dma_cookie_type type;
+
+	/* Full allocator for IOMMU_DMA_IOVA_COOKIE */
+	struct iova_domain iovad;
+};
 
 /*
  * hardware information
@@ -1369,7 +1383,9 @@ static int rkvdec2_alloc_rcbbuf(struct platform_device *pdev, struct rkvdec2_dev
 	struct device_node *sram_np;
 	struct resource sram_res;
 	resource_size_t sram_start, sram_end;
-	struct iommu_domain *domain;
+	struct iommu_domain *domain = dec->mpp.iommu_info->domain;
+	struct rkvdec_iommu_dma_cookie *cookie = (void *)domain->iova_cookie;
+	struct iova_domain *iovad = &cookie->iovad;
 	struct device *dev = &pdev->dev;
 
 	/* get rcb iova start and size */
@@ -1385,10 +1401,9 @@ static int rkvdec2_alloc_rcbbuf(struct platform_device *pdev, struct rkvdec2_dev
 		return -EINVAL;
 	}
 	/* alloc reserve iova for rcb */
-	ret = iommu_dma_reserve_iova(dev, iova, rcb_size);
-	if (ret) {
+	if (!reserve_iova(iovad, iova >> PAGE_SHIFT, (rcb_size + iova) >> PAGE_SHIFT)) {
 		dev_err(dev, "alloc rcb iova error.\n");
-		return ret;
+		return -EINVAL;
 	}
 	/* get sram device node */
 	sram_np = of_parse_phandle(dev->of_node, "rockchip,sram", 0);
@@ -1414,7 +1429,6 @@ static int rkvdec2_alloc_rcbbuf(struct platform_device *pdev, struct rkvdec2_dev
 	sram_size = sram_end - sram_start;
 	sram_size = rcb_size < sram_size ? rcb_size : sram_size;
 	/* iova map to sram */
-	domain = dec->mpp.iommu_info->domain;
 	ret = iommu_map(domain, iova, sram_start, sram_size, IOMMU_READ | IOMMU_WRITE);
 	if (ret) {
 		dev_err(dev, "sram iommu_map error.\n");

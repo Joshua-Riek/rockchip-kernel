@@ -294,6 +294,7 @@ int mpp_dma_map_kernel(struct mpp_dma_session *dma,
 	int ret;
 	void *vaddr;
 	struct dma_buf *dmabuf = buffer->dmabuf;
+	struct dma_buf_map map;
 
 	if (IS_ERR_OR_NULL(dmabuf))
 		return -EINVAL;
@@ -304,7 +305,8 @@ int mpp_dma_map_kernel(struct mpp_dma_session *dma,
 		goto failed_access;
 	}
 
-	vaddr = dma_buf_vmap(dmabuf);
+	ret = dma_buf_vmap(dmabuf, &map);
+	vaddr = ret ? NULL : map.vaddr;
 	if (!vaddr) {
 		dev_dbg(dma->dev, "can't vmap the dma buffer\n");
 		ret = -EIO;

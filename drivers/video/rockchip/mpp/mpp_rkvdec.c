@@ -464,6 +464,7 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 	u32 scaling_fd = 0;
 	int ret = 0;
 	u32 base = sub_addr_offset;
+	struct dma_buf_map map;
 
 	dmabuf = dma_buf_get(fd);
 	if (IS_ERR_OR_NULL(dmabuf)) {
@@ -477,7 +478,8 @@ static int fill_scaling_list_pps(struct rkvdec_task *task,
 		goto done;
 	}
 
-	vaddr = dma_buf_vmap(dmabuf);
+	ret = dma_buf_vmap(dmabuf, &map);
+	vaddr = ret ? NULL : map.vaddr;
 	if (!vaddr) {
 		mpp_err("can't access the pps buffer\n");
 		ret = -EIO;
