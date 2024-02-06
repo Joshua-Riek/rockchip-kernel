@@ -65,7 +65,7 @@ for arch in $archs; do
 	esac
 
 	# Determine cross toolchain to use for Kconfig compiler tests
-	cross_compile="$(dpkg-architecture -qDEB_HOST_GNU_TYPE -a$arch 2>/dev/null)-"
+	# cross_compile="$(dpkg-architecture -qDEB_HOST_GNU_TYPE -a$arch 2>/dev/null)-"
 
 	# Arch-specific compiler, if any
 	archgcc=$(echo -e "show-%:\n\t@echo \$(\$*)\ninclude $DEBIAN/rules.d/$arch.mk" | make -s -f - show-gcc)
@@ -83,6 +83,7 @@ for arch in $archs; do
 		modify_config=
 		warning_partial="$warning_partial $arch"
 	fi
+	env="$env RUSTC=$(which rustc) RUST_LIB_SRC=/usr/src/rustc-1.66.1/library"
 
 	archconfdir=$confdir/$arch
 	flavourconfigs=$(cd $archconfdir && ls config.flavour.*)

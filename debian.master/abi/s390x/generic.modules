@@ -114,7 +114,6 @@ cls_matchall
 cls_route
 cls_rsvp
 cls_rsvp6
-cls_tcindex
 cls_u32
 cmac
 coda
@@ -257,6 +256,7 @@ ghash_s390
 gpio-aggregator
 gpio-bt8xx
 gpio-generic
+gpio-idio-16
 gpio-pci-idio-16
 gpio-pcie-idio-24
 gpio-sim
@@ -544,7 +544,6 @@ nft_masq
 nft_meta_bridge
 nft_nat
 nft_numgen
-nft_objref
 nft_osf
 nft_queue
 nft_quota
@@ -826,6 +825,7 @@ twofish_common
 twofish_generic
 uPD60620
 uartlite
+ubuntu-host
 udf
 udp_diag
 udp_tunnel
@@ -838,7 +838,6 @@ vfio-pci-core
 vfio_ap
 vfio_ccw
 vfio_iommu_type1
-vfio_virqfd
 vhost
 vhost_iotlb
 vhost_net
@@ -969,6 +968,5 @@ znvpair
 zonefs
 zram
 zstd
-zstd_compress
 zunicode
 zzstd

@@ -30,60 +30,39 @@ upstream_version := $(shell sed -n 's/^VERSION = \(.*\)$$/\1/p' Makefile)
 upstream_patchlevel := $(shell sed -n 's/^PATCHLEVEL = \(.*\)$$/\1/p' Makefile)
 upstream_tag := "v$(upstream_version).$(upstream_patchlevel)"
 
-# This is an internally used mechanism for the daily kernel builds. It
-# creates packages whose ABI is suffixed with a minimal representation of
-# the current git HEAD sha. If .git/HEAD is not present, then it uses the
-# uuidgen program,
-#
-# AUTOBUILD can also be used by anyone wanting to build a custom kernel
-# image, or rebuild the entire set of Ubuntu packages using custom patches
-# or configs.
-AUTOBUILD=
-
-ifneq ($(AUTOBUILD),)
-skipabi		= true
-skipmodule	= true
-skipretpoline	= true
-skipdbg		= true
-gitver=$(shell if test -f .git/HEAD; then cat .git/HEAD; else uuidgen; fi)
-gitverpre=$(shell echo $(gitver) | cut -b -3)
-gitverpost=$(shell echo $(gitver) | cut -b 38-40)
-abi_suffix = -$(gitverpre)$(gitverpost)
-endif
-
-ifneq ($(NOKERNLOG),)
-ubuntu_log_opts += --no-kern-log
-endif
-ifneq ($(PRINTSHAS),)
-ubuntu_log_opts += --print-shas
-endif
-
 # Get the kernels own extra version to be added to the release signature.
 raw_kernelversion=$(shell make kernelversion)
 
 #
-# full_build -- are we doing a full buildd style build
+# do_full_build -- are we doing a full buildd style build, i.e., are we
+#                  building in a PPA
 #
 ifeq ($(wildcard /CurrentlyBuilding),)
-full_build?=false
+	do_full_build ?= false
 else
-full_build?=true
+	do_full_build ?= true
 endif
 
 #
 # The debug packages are ginormous, so you probably want to skip
 # building them (as a developer).
 #
-ifeq ($(full_build),false)
-skipdbg=true
+do_dbgsym_package = true
+ifeq ($(do_full_build),false)
+	do_dbgsym_package = false
+endif
+ifeq ($(filter $(DEB_BUILD_OPTIONS),noautodbgsym),noautodbgsym)
+	# Disable debug package builds if we're building in a PPA that has the
+	# 'Build debug symbols' option disabled
+	do_dbgsym_package = false
 endif
 
-abinum		:= $(firstword $(subst .,$(space),$(revision)))$(abi_suffix)
-prev_abinum	:= $(firstword $(subst .,$(space),$(prev_revision)))$(abi_suffix)
+abinum		:= $(firstword $(subst .,$(space),$(revision)))
+prev_abinum	:= $(firstword $(subst .,$(space),$(prev_revision)))
 abi_release	:= $(release)-$(abinum)
 
 uploadnum	:= $(patsubst $(abinum).%,%,$(revision))
-ifneq ($(full_build),false)
+ifneq ($(do_full_build),false)
   uploadnum	:= $(uploadnum)-Ubuntu
 endif
 
@@ -143,7 +122,7 @@ hdrs_pkg_name=linux-headers-$(abi_release)
 indep_hdrs_pkg_name=$(src_pkg_name)-headers-$(abi_release)
 
 #
-# The generation of content in the doc package depends on both 'AUTOBUILD=' and
+# The generation of content in the doc package depends on
 # 'do_doc_package_content=true'. There are usually build errors during the development
 # cycle, so its OK to leave 'do_doc_package_content=false' until those build
 # failures get sorted out. Finally, the doc package doesn't really need to be built
@@ -154,7 +133,7 @@ else
 do_doc_package=false
 endif
 do_doc_package_content=false
-ifeq ($(full_build),false)
+ifeq ($(do_full_build),false)
 do_doc_package_content=false
 endif
 doc_pkg_name=$(src_pkg_name)-doc
@@ -165,7 +144,7 @@ doc_pkg_name=$(src_pkg_name)-doc
 #
 do_source_package=true
 do_source_package_content=true
-ifeq ($(full_build),false)
+ifeq ($(do_full_build),false)
 do_source_package_content=false
 endif
 
@@ -250,28 +229,30 @@ conc_level		= -j$(CONCURRENCY_LEVEL)
 
 PYTHON ?= $(firstword $(wildcard /usr/bin/python3) $(wildcard /usr/bin/python2) $(wildcard /usr/bin/python))
 
-HOSTCC ?= $(DEB_BUILD_GNU_TYPE)-$(gcc)
+RUSTC ?= $(shell echo `which rustc`)
+RUST_LIB_SRC ?= "/usr/src/rustc-1.66.1/library"
+
+# HOSTCC ?= $(DEB_BUILD_GNU_TYPE)-$(gcc)
+HOSTCC ?= $(gcc)
 
 # target_flavour is filled in for each step
 kmake = make ARCH=$(build_arch) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
 	HOSTCC=$(HOSTCC) \
-	CC=$(CROSS_COMPILE)$(gcc) \
+	CC=$(gcc) \
+	RUSTC=rustc HOSTRUSTC=rustc BINDGEN=bindgen RUSTFMT=rustfmt RUST_LIB_SRC=/usr/src/rustc-1.66.1/library \
 	KERNELVERSION=$(abi_release)-$(target_flavour) \
-	CONFIG_DEBUG_SECTION_MISMATCH=y \
 	KBUILD_BUILD_VERSION="$(uploadnum)" \
 	LOCALVERSION= localver-extra= \
 	CFLAGS_MODULE="-DPKG_ABI=$(abinum)" \
-	PYTHON=$(PYTHON)
+	PYTHON=$(PYTHON) RUSTC=$(RUSTC) RUST_LIB_SRC=$(RUST_LIB_SRC)
 ifneq ($(LOCAL_ENV_CC),)
 kmake += CC="$(LOCAL_ENV_CC)" DISTCC_HOSTS="$(LOCAL_ENV_DISTCC_HOSTS)"
 endif
 
 # Locking is required in parallel builds to prevent loss of contents
 # of the debian/files.
-lockme_file = $(CURDIR)/debian/.LOCK
-lockme_cmd = flock -w 60
-lockme = $(lockme_cmd) $(lockme_file)
+lockme = flock -w 60 $(CURDIR)/debian/.LOCK
 
 # Don't fail if a link already exists.
 LN = ln -sf
