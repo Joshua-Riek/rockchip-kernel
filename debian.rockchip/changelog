@@ -1,4 +1,4 @@
-linux-rockchip (6.3.0-7.8) jammy; urgency=medium
+linux-rockchip (6.1.43-1) jammy; urgency=medium
 
   * Fix tg3 firmware bug in initrd
 
