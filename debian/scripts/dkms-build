@@ -217,6 +217,10 @@ while read module; do
 		echo "copying $vmodule"
 		cp "$module" "$pkgdir"
 		;;
+	*-)
+		echo "copying $vmodule"
+		cp "$module" "$pkgdir"
+		;;
 	*)
 		echo "signing $vmodule"
 		$sign "$module" "$pkgdir/$vmodule"
