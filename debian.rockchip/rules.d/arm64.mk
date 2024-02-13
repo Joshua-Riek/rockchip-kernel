@@ -26,4 +26,4 @@ do_extras_package	= true
 
 do_skip_checks	= true
 
-gcc = clang
+gcc = gcc
